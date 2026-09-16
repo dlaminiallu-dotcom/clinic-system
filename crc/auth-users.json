@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Test Admin",
+    "email": "test806089401@example.com",
+    "salt": "d319b821108e4d95ed71704539ff6aea",
+    "hash": "acf849656c332e5257f99806e97af346c133e1dae64fca32a34979c8da5deb882f656b6f5a5b9ec2acf354df79c9729967b06b48bc10ac768a824d161fad4050"
+  },
+  {
+    "name": "QWATEKANA BANELE",
+    "email": "dlaminiallu@gmail.com",
+    "salt": "91f5d07b3e3fc74b0e068def6d9fdf4e",
+    "hash": "8adbb0b3838be3ed9755ab9dbc843f879c5555ad0203a500a54b2cecc6d6b21eb911b8dfe747b87daec40212575006969b2042bf328d635dc38b014eaab13543"
+  },
+  {
+    "name": "QWATEKANA BANELE",
+    "email": "dlaminiallu@gmil.com",
+    "salt": "59792cf3a121d40913db8bc5664269a2",
+    "hash": "705b4bd96c4bc2825c7f1b5191162397a7e4021413d0d0483f15ae97cc5709dbe4d57d3de2d16f006cbea9fa5296cb32fd232cab856b973fcfaf68cd28de5a0b"
+  }
+]

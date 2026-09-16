@@ -1,0 +1,5 @@
+crc/oracleJdk-26/
+crc/node_modules/
+crc/dist/
+
+.env
