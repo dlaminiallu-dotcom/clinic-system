@@ -120,4 +120,4 @@ app.put("/api/clinic-state", async (request, response) => {
   }
 });
 
-app.listen(port, () => console.log(`Clinic API running at http://localhost:${port}`));
+export default app;
