@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "api": "node --experimental-strip-types server.mjs",
+    "api": "node --experimental-strip-types --input-type=module -e \"import('./server.mjs').then(({ default: app }) => app.listen(Number(process.env.API_PORT || 3001), () => console.log('Clinic API running at http://localhost:' + (process.env.API_PORT || 3001))))\"",
     "dev:all": "concurrently \"npm run api\" \"npm run dev\"",
     "build": "vite build",
     "preview": "vite preview",
