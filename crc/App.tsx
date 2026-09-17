@@ -20,6 +20,7 @@ type ClinicState = {
 };
 
 const ClinicContext = createContext<ClinicState | null>(null);
+const API_URL = import.meta.env.VITE_API_URL || "";
 
 function useClinic() {
   const context = useContext(ClinicContext);
@@ -40,7 +41,7 @@ function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) 
     setError("");
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3001/api/auth/${mode}`, {
+      const response = await fetch(`${API_URL}/api/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, password }),
@@ -1153,7 +1154,7 @@ export default function App() {
   const hasLoadedDatabase = useRef(false);
 
   const logout = async () => {
-    await fetch("http://localhost:3001/api/auth/logout", {
+    await fetch(`${API_URL}/api/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${authToken}` },
     }).catch(() => undefined);
@@ -1163,7 +1164,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetch("http://localhost:3001/api/clinic-state")
+    fetch(`${API_URL}/api/clinic-state`)
       .then(response => response.ok ? response.json() : Promise.reject(new Error("Database API unavailable")))
       .then(state => {
         const doctorNames = new Set(initialDoctors.map(doctor => doctor.name));
@@ -1183,7 +1184,7 @@ export default function App() {
 
   useEffect(() => {
     if (!hasLoadedDatabase.current) return;
-    fetch("http://localhost:3001/api/clinic-state", {
+    fetch(`${API_URL}/api/clinic-state`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ patients, doctors: initialDoctors, appointments, records, prescriptions, bills, reminders }),

@@ -3,3 +3,4 @@ crc/node_modules/
 crc/dist/
 
 .env
+crc/data.env
