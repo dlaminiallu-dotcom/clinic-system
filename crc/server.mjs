@@ -10,10 +10,18 @@ dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || "data.env" });
 const app = express();
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!supabaseUrl || !supabaseServiceRoleKey) {
-  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+const supabase = supabaseUrl && supabaseServiceRoleKey
+  ? createClient(supabaseUrl, supabaseServiceRoleKey, { auth: { persistSession: false } })
+  : null;
+
+function getSupabase() {
+  if (!supabase) {
+    const error = new Error("Server configuration missing: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY");
+    error.status = 503;
+    throw error;
+  }
+  return supabase;
 }
-const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, { auth: { persistSession: false } });
 
 const initialState = { patients, doctors, appointments, records, prescriptions, bills, reminders };
 const authTokenLifetimeSeconds = 8 * 60 * 60;
@@ -94,7 +102,7 @@ app.post("/api/auth/signup", async (request, response) => {
   if (!name?.trim() || !normalizedEmail || !password || password.length < 8) {
     return response.status(400).json({ error: "Name, email, and a password of at least 8 characters are required" });
   }
-  const { data: existingUser, error: lookupError } = await supabase
+  const { data: existingUser, error: lookupError } = await getSupabase()
     .from("clinic_users")
     .select("id")
     .eq("email", normalizedEmail)
@@ -104,7 +112,7 @@ app.post("/api/auth/signup", async (request, response) => {
     return response.status(409).json({ error: "An account with this email already exists" });
   }
   const credentials = hashPassword(password);
-  const { error: insertError } = await supabase.from("clinic_users").insert({
+  const { error: insertError } = await getSupabase().from("clinic_users").insert({
     name: name.trim(),
     email: normalizedEmail,
     password_hash: credentials.hash,
@@ -118,7 +126,7 @@ app.post("/api/auth/signup", async (request, response) => {
 app.post("/api/auth/login", async (request, response) => {
   const { email, password } = request.body;
   const normalizedEmail = String(email || "").trim().toLowerCase();
-  const { data: user, error } = await supabase
+  const { data: user, error } = await getSupabase()
     .from("clinic_users")
     .select("email, name, password_hash, password_salt, role")
     .eq("email", normalizedEmail)
@@ -129,7 +137,7 @@ app.post("/api/auth/login", async (request, response) => {
   }
   if (user.role !== "admin") return response.status(403).json({ error: "Your account is awaiting administrator approval" });
   const authVersion = crypto.randomBytes(16).toString("hex");
-  const { error: updateError } = await supabase
+  const { error: updateError } = await getSupabase()
     .from("clinic_users")
     .update({ auth_version: authVersion })
     .eq("email", user.email);
@@ -139,7 +147,7 @@ app.post("/api/auth/login", async (request, response) => {
 });
 
 app.post("/api/auth/logout", requireAdmin, async (request, response) => {
-  const { error } = await supabase
+  const { error } = await getSupabase()
     .from("clinic_users")
     .update({ auth_version: crypto.randomBytes(16).toString("hex") })
     .eq("email", request.user.email);
@@ -149,20 +157,20 @@ app.post("/api/auth/logout", requireAdmin, async (request, response) => {
 
 app.get("/api/health", async (_request, response) => {
   try {
-    const { error } = await supabase.from("clinic_state").select("state_key").limit(1);
+    const { error } = await getSupabase().from("clinic_state").select("state_key").limit(1);
     if (error) throw error;
     response.json({ ok: true, database: "supabase" });
   } catch (error) {
-    response.status(500).json({ ok: false, error: error.message });
+    response.status(error.status || 500).json({ ok: false, error: error.message });
   }
 });
 
 app.get("/api/clinic-state", requireAdmin, async (_request, response) => {
   try {
-    const { data: row, error } = await supabase.from("clinic_state").select("state").eq("state_key", "main").maybeSingle();
+    const { data: row, error } = await getSupabase().from("clinic_state").select("state").eq("state_key", "main").maybeSingle();
     if (error) throw error;
     if (!row) {
-      const { error: insertError } = await supabase.from("clinic_state").insert({ state_key: "main", state: initialState });
+      const { error: insertError } = await getSupabase().from("clinic_state").insert({ state_key: "main", state: initialState });
       if (insertError) throw insertError;
       return response.json(initialState);
     }
@@ -174,12 +182,17 @@ app.get("/api/clinic-state", requireAdmin, async (_request, response) => {
 
 app.put("/api/clinic-state", requireAdmin, async (request, response) => {
   try {
-    const { error } = await supabase.from("clinic_state").upsert({ state_key: "main", state: request.body });
+    const { error } = await getSupabase().from("clinic_state").upsert({ state_key: "main", state: request.body });
     if (error) throw error;
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json({ error: error.message });
   }
+});
+
+app.use((error, _request, response, _next) => {
+  console.error("API request failed:", error.message);
+  response.status(error.status || 500).json({ error: error.status === 503 ? error.message : "Internal server error" });
 });
 
 export default app;
