@@ -16,7 +16,7 @@ if (!supabaseUrl || !supabaseServiceRoleKey) {
 const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, { auth: { persistSession: false } });
 
 const initialState = { patients, doctors, appointments, records, prescriptions, bills, reminders };
-const sessions = new Set();
+const authTokenLifetimeSeconds = 8 * 60 * 60;
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   return { salt, hash: crypto.scryptSync(password, salt, 64).toString("hex") };
@@ -24,7 +24,61 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
 
 function passwordsMatch(password, user) {
   const { hash } = hashPassword(password, user.salt);
-  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(user.hash, "hex"));
+  const actualHash = Buffer.from(hash, "hex");
+  const expectedHash = Buffer.from(user.hash, "hex");
+  return actualHash.length === expectedHash.length && crypto.timingSafeEqual(actualHash, expectedHash);
+}
+
+function createAuthToken(user) {
+  const payload = Buffer.from(JSON.stringify({
+    sub: user.email,
+    role: user.role,
+    ver: user.auth_version,
+    exp: Math.floor(Date.now() / 1000) + authTokenLifetimeSeconds,
+  })).toString("base64url");
+  const signature = crypto.createHmac("sha256", supabaseServiceRoleKey).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyAuthToken(token) {
+  const [payload, signature, extra] = String(token || "").split(".");
+  if (!payload || !signature || extra) return null;
+
+  const expectedSignature = crypto.createHmac("sha256", supabaseServiceRoleKey).update(payload).digest();
+  let actualSignature;
+  try {
+    actualSignature = Buffer.from(signature, "base64url");
+  } catch {
+    return null;
+  }
+  if (actualSignature.length !== expectedSignature.length || !crypto.timingSafeEqual(actualSignature, expectedSignature)) return null;
+
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (typeof claims.sub !== "string" || typeof claims.ver !== "string" || claims.role !== "admin" || claims.exp <= Math.floor(Date.now() / 1000)) return null;
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+async function requireAdmin(request, response, next) {
+  const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const claims = verifyAuthToken(token);
+  if (!claims) return response.status(401).json({ error: "Authentication required" });
+
+  const { data: user, error } = await supabase
+    .from("clinic_users")
+    .select("role, auth_version")
+    .eq("email", claims.sub)
+    .maybeSingle();
+  if (error) return response.status(500).json({ error: "Unable to verify account access" });
+  if (!user || user.role !== "admin" || user.auth_version !== claims.ver) {
+    return response.status(403).json({ error: "Administrator access required" });
+  }
+
+  request.user = { email: claims.sub, role: user.role };
+  next();
 }
 
 app.use(cors());
@@ -55,9 +109,10 @@ app.post("/api/auth/signup", async (request, response) => {
     email: normalizedEmail,
     password_hash: credentials.hash,
     password_salt: credentials.salt,
+    role: "pending",
   });
   if (insertError) return response.status(500).json({ error: insertError.message });
-  response.status(201).json({ ok: true });
+  response.status(201).json({ ok: true, pendingApproval: true });
 });
 
 app.post("/api/auth/login", async (request, response) => {
@@ -65,21 +120,30 @@ app.post("/api/auth/login", async (request, response) => {
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const { data: user, error } = await supabase
     .from("clinic_users")
-    .select("email, name, password_hash, password_salt")
+    .select("email, name, password_hash, password_salt, role")
     .eq("email", normalizedEmail)
     .maybeSingle();
   if (error) return response.status(500).json({ error: error.message });
   if (!user || !passwordsMatch(password || "", { hash: user.password_hash, salt: user.password_salt })) {
     return response.status(401).json({ error: "Invalid email or password" });
   }
-  const token = crypto.randomBytes(32).toString("hex");
-  sessions.add(token);
+  if (user.role !== "admin") return response.status(403).json({ error: "Your account is awaiting administrator approval" });
+  const authVersion = crypto.randomBytes(16).toString("hex");
+  const { error: updateError } = await supabase
+    .from("clinic_users")
+    .update({ auth_version: authVersion })
+    .eq("email", user.email);
+  if (updateError) return response.status(500).json({ error: updateError.message });
+  const token = createAuthToken({ ...user, auth_version: authVersion });
   response.json({ token, user: { email: user.email, name: user.name } });
 });
 
-app.post("/api/auth/logout", (request, response) => {
-  const token = request.headers.authorization?.replace("Bearer ", "");
-  if (token) sessions.delete(token);
+app.post("/api/auth/logout", requireAdmin, async (request, response) => {
+  const { error } = await supabase
+    .from("clinic_users")
+    .update({ auth_version: crypto.randomBytes(16).toString("hex") })
+    .eq("email", request.user.email);
+  if (error) return response.status(500).json({ error: error.message });
   response.json({ ok: true });
 });
 
@@ -93,7 +157,7 @@ app.get("/api/health", async (_request, response) => {
   }
 });
 
-app.get("/api/clinic-state", async (_request, response) => {
+app.get("/api/clinic-state", requireAdmin, async (_request, response) => {
   try {
     const { data: row, error } = await supabase.from("clinic_state").select("state").eq("state_key", "main").maybeSingle();
     if (error) throw error;
@@ -108,7 +172,7 @@ app.get("/api/clinic-state", async (_request, response) => {
   }
 });
 
-app.put("/api/clinic-state", async (request, response) => {
+app.put("/api/clinic-state", requireAdmin, async (request, response) => {
   try {
     const { error } = await supabase.from("clinic_state").upsert({ state_key: "main", state: request.body });
     if (error) throw error;

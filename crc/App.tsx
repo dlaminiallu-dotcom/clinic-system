@@ -51,13 +51,15 @@ function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) 
       try {
         result = JSON.parse(body);
       } catch {
-        throw new Error("The authentication API is not responding. Restart npm run api and try again.");
+        const endpoint = `${API_URL || window.location.origin}/api/auth/${mode}`;
+        const contentType = response.headers.get("content-type") || "unknown content type";
+        throw new Error(`Authentication endpoint ${endpoint} returned HTTP ${response.status} (${contentType}), not JSON. Refresh the latest app or check the deployed /api route.`);
       }
       if (!response.ok) throw new Error(result.error || "Login failed");
       if (mode === "signup") {
         setMode("login");
         setPassword("");
-        setError("Account created. Sign in with your new account.");
+        setError("Account created. An administrator must approve it before you can sign in.");
         return;
       }
       if (!result.token) throw new Error("Login response did not include a session token");
@@ -1160,12 +1162,30 @@ export default function App() {
     }).catch(() => undefined);
     localStorage.removeItem("clinic_admin_token");
     localStorage.removeItem("clinic_admin_name");
+    hasLoadedDatabase.current = false;
+    setDatabaseReady(false);
     setAuthToken(null);
   };
 
   useEffect(() => {
-    fetch(`${API_URL}/api/clinic-state`)
-      .then(response => response.ok ? response.json() : Promise.reject(new Error("Database API unavailable")))
+    if (!authToken) {
+      hasLoadedDatabase.current = false;
+      setDatabaseReady(false);
+      return;
+    }
+
+    fetch(`${API_URL}/api/clinic-state`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then(response => {
+        if (response.status === 401 || response.status === 403) {
+          localStorage.removeItem("clinic_admin_token");
+          localStorage.removeItem("clinic_admin_name");
+          setAuthToken(null);
+          throw new Error("Your session is not authorized. Sign in again.");
+        }
+        return response.ok ? response.json() : Promise.reject(new Error("Database API unavailable"));
+      })
       .then(state => {
         const doctorNames = new Set(initialDoctors.map(doctor => doctor.name));
         const availableAppointments = state.appointments.filter((appointment: typeof initialAppointments[number]) => doctorNames.has(appointment.doctor));
@@ -1180,16 +1200,27 @@ export default function App() {
         setDatabaseReady(true);
       })
       .catch(() => setDatabaseReady(false));
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
-    if (!hasLoadedDatabase.current) return;
+    if (!authToken || !hasLoadedDatabase.current) return;
     fetch(`${API_URL}/api/clinic-state`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
       body: JSON.stringify({ patients, doctors: initialDoctors, appointments, records, prescriptions, bills, reminders }),
+    }).then(response => {
+      if (response.status === 401 || response.status === 403) {
+        localStorage.removeItem("clinic_admin_token");
+        localStorage.removeItem("clinic_admin_name");
+        hasLoadedDatabase.current = false;
+        setAuthToken(null);
+      }
+      if (!response.ok) setDatabaseReady(false);
     }).catch(() => setDatabaseReady(false));
-  }, [patients, appointments, records, prescriptions, bills, reminders]);
+  }, [authToken, patients, appointments, records, prescriptions, bills, reminders]);
 
   if (!authToken) return <Login onLogin={(token, name) => { setAuthToken(token); setAdminName(name); }} />;
 
