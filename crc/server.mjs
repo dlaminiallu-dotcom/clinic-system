@@ -57,6 +57,10 @@ function isNetworkFailure(error) {
   return /fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|network/i.test(message);
 }
 
+function canUseLocalFallback() {
+  return process.env.NODE_ENV !== "production";
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   return { salt, hash: crypto.scryptSync(password, salt, 64).toString("hex") };
 }
@@ -184,6 +188,7 @@ app.post("/api/auth/signup", async (request, response) => {
     response.status(201).json({ ok: true, pendingApproval: true });
   } catch (error) {
     if (isNetworkFailure(error)) {
+      if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
       const existingUser = getLocalUser(normalizedEmail);
       if (existingUser) {
@@ -241,6 +246,7 @@ app.post("/api/auth/login", async (request, response) => {
     response.json({ token, user: { email: user.email, name: user.name } });
   } catch (error) {
     if (isNetworkFailure(error)) {
+      if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
       const user = getLocalUser(normalizedEmail);
       if (!user || !passwordsMatch(password || "", { hash: user.password_hash, salt: user.password_salt })) {
@@ -274,6 +280,7 @@ app.post("/api/auth/logout", requireAdmin, async (request, response) => {
     response.json({ ok: true });
   } catch (error) {
     if (isNetworkFailure(error)) {
+      if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
       const user = getLocalUser(request.user.email);
       if (user) user.auth_version = crypto.randomBytes(16).toString("hex");
@@ -294,6 +301,7 @@ app.get("/api/health", async (_request, response) => {
     response.json({ ok: true, database: "supabase" });
   } catch (error) {
     if (isNetworkFailure(error)) {
+      if (!canUseLocalFallback()) return response.status(503).json({ ok: false, database: "unavailable" });
       useLocalFallback = true;
       return response.json({ ok: true, database: "local-memory" });
     }
@@ -315,6 +323,7 @@ app.get("/api/clinic-state", requireAdmin, async (_request, response) => {
     response.json(row.state);
   } catch (error) {
     if (isNetworkFailure(error)) {
+      if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
       return response.json(localState);
     }
@@ -334,6 +343,7 @@ app.put("/api/clinic-state", requireAdmin, async (request, response) => {
     response.json({ ok: true });
   } catch (error) {
     if (isNetworkFailure(error)) {
+      if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
       localState = JSON.parse(JSON.stringify(request.body));
       return response.json({ ok: true });
