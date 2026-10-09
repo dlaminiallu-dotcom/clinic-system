@@ -752,7 +752,7 @@ function Records() {
                 <p className="font-semibold text-[#0f1923]">{selected.diagnosis}</p>
                 <span className="text-xs font-mono text-[#0a6e6e]">ICD-10: {selected.icd}</span>
               </div>
-              <div className="grid grid-cols-3 gap-3 mb-5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-5">
                 {[
                   { l: "Blood Pressure", v: selected.bp },
                   { l: "Heart Rate", v: selected.hr + " bpm" },
@@ -953,7 +953,7 @@ function Billing() {
           <div className="mt-4"><Btn onClick={saveInvoice}>Save Invoice</Btn></div>
         </Card>
       )}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatTile label="Total Revenue" value={formatRand(totalRevenue)} />
         <StatTile label="Outstanding" value={formatRand(outstanding)} accent />
         <StatTile label="Invoices" value={bills.length} sub={`${bills.filter(b => b.status === "Paid").length} paid`} />
@@ -1098,7 +1098,7 @@ function Reminders() {
           <div className="mt-4"><Btn onClick={saveReminder}>Queue Reminder</Btn></div>
         </Card>
       )}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatTile label="Total Sent" value={sent} />
         <StatTile label="Scheduled" value={reminders.filter(r => r.status === "Scheduled").length} accent />
         <StatTile label="Pending" value={reminders.filter(r => r.status === "Pending").length} />
