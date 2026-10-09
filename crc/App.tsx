@@ -117,7 +117,11 @@ function Login({ onLogin }: { onLogin: (token: string, name: string, role: "admi
   );
 }
 
-function Approvals({ token }: { token: string }) {
+function Approvals({ token, onDoctorApproved, onDoctorRemoved }: {
+  token: string;
+  onDoctorApproved: (doctor: typeof initialDoctors[number]) => void;
+  onDoctorRemoved: (email: string) => void;
+}) {
   const [users, setUsers] = useState<{ id: string; name: string; email: string; created_at?: string }[]>([]);
   const [doctors, setDoctors] = useState<{ id: string; name: string; email: string; created_at?: string }[]>([]);
   const [error, setError] = useState("");
@@ -153,6 +157,7 @@ function Approvals({ token }: { token: string }) {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to approve account");
+      if (result.doctor) onDoctorApproved(result.doctor);
       setUsers(current => current.filter(user => user.id !== userId));
       loadPendingUsers();
     } catch (approvalError) {
@@ -170,6 +175,7 @@ function Approvals({ token }: { token: string }) {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to remove doctor account");
+      onDoctorRemoved(result.email);
       setDoctors(current => current.filter(currentDoctor => currentDoctor.id !== doctor.id));
     } catch (removeError) {
       setError(removeError instanceof Error ? removeError.message : "Unable to remove doctor account");
@@ -255,6 +261,10 @@ function formatRand(amount: number) {
   return new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(amount);
 }
 
+function localDateString(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function Card({ children, className = "", onClick }: { children: React.ReactNode; className?: string; onClick?: () => void }) {
   return <div className={`bg-white rounded-xl border border-[#d1dce5] ${className}`} onClick={onClick}>{children}</div>;
 }
@@ -293,18 +303,19 @@ function StatTile({ label, value, sub, accent }: { label: string; value: string 
 function Dashboard({ adminName, userRole }: { adminName: string; userRole: "admin" | "doctor" }) {
   const { patients, doctors, appointments, prescriptions, bills, reminders } = useClinic();
   const surname = adminName.trim().split(/\s+/).filter(Boolean).at(-1) || "Admin";
-  const todayApts = appointments.filter(a => a.date === "2026-09-10");
+  const today = localDateString();
+  const todayApts = appointments.filter(a => a.date === today);
   const outstanding = bills.reduce((total, bill) => total + (bill.total - bill.paid), 0);
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-[#0f1923]">Good morning, Dr. {surname}</h1>
-        <p className="text-sm text-[#5a6e7e]">Thursday, September 10, 2026 · Greenfield Medical Clinic</p>
+        <h1 className="text-2xl font-bold text-[#0f1923]">Good morning, {userRole === "admin" ? "" : "Dr. "}{surname}</h1>
+        <p className="text-sm text-[#5a6e7e]">{new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })} · Greenfield Medical Clinic</p>
       </div>
-      <div className={`grid grid-cols-2 ${userRole === "admin" ? "lg:grid-cols-4" : "lg:grid-cols-3"} gap-4`}>
+      <div className={`grid grid-cols-2 ${userRole === "admin" ? "lg:grid-cols-3" : "lg:grid-cols-3"} gap-4`}>
         <StatTile label="Patients" value={patients.length} sub="+1 this week" />
         <StatTile label="Today's Appointments" value={todayApts.length} sub="2 confirmed" accent />
-        <StatTile label="Active Prescriptions" value={prescriptions.filter(p => p.status === "Active").length} sub="Across 3 patients" />
+        {userRole === "doctor" && <StatTile label="Active Prescriptions" value={prescriptions.filter(p => p.status === "Active").length} sub="Across your patients" />}
         {userRole === "admin" && <StatTile label="Pending Invoices" value={formatRand(outstanding)} sub={`${bills.filter(b => b.total > b.paid).length} bills outstanding`} />}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -407,12 +418,12 @@ function Dashboard({ adminName, userRole }: { adminName: string; userRole: "admi
 
 // ─── PATIENTS ────────────────────────────────────────────────────────────────
 
-function Patients() {
+function Patients({ userRole }: { userRole: "admin" | "doctor" }) {
   const { patients, setPatients } = useClinic();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<typeof patients[0] | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", dob: "", gender: "Female", phone: "", email: "", blood: "O+", address: "" });
+  const [form, setForm] = useState({ name: "", dob: "", gender: "", phone: "", email: "", blood: "", address: "" });
   const [error, setError] = useState("");
 
   const filtered = patients.filter(p =>
@@ -421,20 +432,20 @@ function Patients() {
   );
 
   const savePatient = () => {
-    if (!form.name.trim() || !form.dob || !form.phone.trim()) {
-      setError("Name, date of birth, and phone are required.");
+    if (!form.name.trim() || !form.phone.trim() || (userRole === "doctor" && !form.dob)) {
+      setError(userRole === "admin" ? "Name and phone are required." : "Name, date of birth, and phone are required.");
       return;
     }
     const nextPatient = {
-      id: `P-${String(41 + patients.length).padStart(4, "0")}`,
+      id: `P-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
       ...form,
-      registered: "2026-09-10",
+      registered: localDateString(),
       lastVisit: "—",
       status: "Active",
     };
     setPatients(current => [...current, nextPatient]);
     setSelected(nextPatient);
-    setForm({ name: "", dob: "", gender: "Female", phone: "", email: "", blood: "O+", address: "" });
+    setForm({ name: "", dob: "", gender: "", phone: "", email: "", blood: "", address: "" });
     setError("");
     setShowForm(false);
   };
@@ -452,10 +463,12 @@ function Patients() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {[
               { label: "Full Name", key: "name", type: "text" },
-              { label: "Date of Birth", key: "dob", type: "date" },
               { label: "Phone", key: "phone", type: "tel" },
               { label: "Email", key: "email", type: "email" },
-              { label: "Address", key: "address", type: "text" },
+              ...(userRole === "doctor" ? [
+                { label: "Date of Birth", key: "dob", type: "date" },
+                { label: "Address", key: "address", type: "text" },
+              ] : []),
             ].map(f => (
               <div key={f.key}>
                 <label className="text-xs text-[#5a6e7e] font-medium block mb-1">{f.label}</label>
@@ -467,18 +480,18 @@ function Patients() {
                 />
               </div>
             ))}
-            <div>
+            {userRole === "doctor" && <div>
               <label className="text-xs text-[#5a6e7e] font-medium block mb-1">Gender</label>
               <select value={form.gender} onChange={e => setForm({ ...form, gender: e.target.value })} className="w-full border border-[#d1dce5] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0a6e6e]">
                 {["Female", "Male", "Non-binary", "Prefer not to say"].map(g => <option key={g}>{g}</option>)}
               </select>
-            </div>
-            <div>
+            </div>}
+            {userRole === "doctor" && <div>
               <label className="text-xs text-[#5a6e7e] font-medium block mb-1">Blood Type</label>
               <select value={form.blood} onChange={e => setForm({ ...form, blood: e.target.value })} className="w-full border border-[#d1dce5] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0a6e6e]">
                 {["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"].map(b => <option key={b}>{b}</option>)}
               </select>
-            </div>
+            </div>}
           </div>
           <div className="mt-4 flex gap-2">
             <Btn onClick={savePatient}>Save Patient</Btn>
@@ -503,7 +516,7 @@ function Patients() {
           <table className="w-full min-w-175 text-sm">
             <thead className="bg-[#f0f4f8]">
               <tr className="text-left text-xs text-[#5a6e7e]">
-                {["ID", "Name", "DOB", "Blood", "Phone", "Last Visit", "Status"].map(h => (
+                {(userRole === "admin" ? ["ID", "Name", "Phone", "Email", "Registered", "Last Visit", "Status"] : ["ID", "Name", "DOB", "Blood", "Phone", "Last Visit", "Status"]).map(h => (
                   <th key={h} className="px-4 py-3 font-medium">{h}</th>
                 ))}
               </tr>
@@ -517,9 +530,15 @@ function Patients() {
                 >
                   <td className="px-4 py-3 font-mono text-xs text-[#5a6e7e]">{p.id}</td>
                   <td className="px-4 py-3 font-medium">{p.name}</td>
-                  <td className="px-4 py-3 text-[#5a6e7e]">{p.dob}</td>
-                  <td className="px-4 py-3"><span className="font-mono text-xs bg-[#e8f0ef] text-[#0a6e6e] px-2 py-0.5 rounded">{p.blood}</span></td>
-                  <td className="px-4 py-3 text-[#5a6e7e] text-xs">{p.phone}</td>
+                  {userRole === "doctor" ? <>
+                    <td className="px-4 py-3 text-[#5a6e7e]">{p.dob}</td>
+                    <td className="px-4 py-3"><span className="font-mono text-xs bg-[#e8f0ef] text-[#0a6e6e] px-2 py-0.5 rounded">{p.blood}</span></td>
+                  </> : <>
+                    <td className="px-4 py-3 text-[#5a6e7e] text-xs">{p.phone}</td>
+                    <td className="px-4 py-3 text-[#5a6e7e] text-xs">{p.email}</td>
+                    <td className="px-4 py-3 text-[#5a6e7e] text-xs">{p.registered}</td>
+                  </>}
+                  {userRole === "doctor" && <td className="px-4 py-3 text-[#5a6e7e] text-xs">{p.phone}</td>}
                   <td className="px-4 py-3 text-[#5a6e7e] text-xs">{p.lastVisit}</td>
                   <td className="px-4 py-3"><Badge label={p.status} color={statusColor(p.status)} /></td>
                 </tr>
@@ -543,12 +562,14 @@ function Patients() {
             </div>
             <div className="space-y-3">
               {[
-                { l: "Date of Birth", v: selected.dob },
-                { l: "Gender", v: selected.gender },
-                { l: "Blood Type", v: selected.blood },
+                ...(userRole === "doctor" ? [
+                  { l: "Date of Birth", v: selected.dob },
+                  { l: "Gender", v: selected.gender },
+                  { l: "Blood Type", v: selected.blood },
+                  { l: "Address", v: selected.address },
+                ] : []),
                 { l: "Phone", v: selected.phone },
                 { l: "Email", v: selected.email },
-                { l: "Address", v: selected.address },
                 { l: "Registered", v: selected.registered },
                 { l: "Last Visit", v: selected.lastVisit },
               ].map(({ l, v }) => (
@@ -574,11 +595,11 @@ function Patients() {
 
 // ─── APPOINTMENTS ────────────────────────────────────────────────────────────
 
-function Appointments() {
+function Appointments({ userRole, token }: { userRole: "admin" | "doctor"; token: string }) {
   const { patients, doctors, appointments, setAppointments } = useClinic();
   const [filter, setFilter] = useState("All");
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ patientId: patients[0]?.id ?? "", doctorId: doctors[0]?.id ?? "", date: "2026-09-15", time: "09:00", type: "Consultation", notes: "" });
+  const [form, setForm] = useState({ patientId: patients[0]?.id ?? "", doctorId: doctors[0]?.id ?? "", date: localDateString(), time: "09:00", type: "Consultation", notes: "" });
   const [error, setError] = useState("");
 
   const filters = ["All", "Confirmed", "Pending", "Cancelled"];
@@ -607,17 +628,31 @@ function Appointments() {
     setShowNew(false);
     setError("");
   };
-  const updateAppointmentStatus = (id: string, status: string) => {
+  const updateAppointmentStatus = async (id: string, status: string) => {
+    if (status === "Cancelled") {
+      const response = await fetch(`${API_URL}/api/appointments/${encodeURIComponent(id)}/cancel`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setError(result.error || "Unable to cancel appointment");
+        return;
+      }
+      setAppointments(current => current.map(appointment => appointment.id === id ? result.appointment : appointment));
+      return;
+    }
     setAppointments(current => current.map(appointment => appointment.id === id ? { ...appointment, status } : appointment));
   };
 
   return (
     <div className="space-y-5">
-      <SectionHeader title="Appointment Booking" action={
+      <SectionHeader title="Appointment Management" action={userRole === "admin" ? (
         <Btn onClick={() => setShowNew(!showNew)}>{showNew ? "Cancel" : "+ New Appointment"}</Btn>
-      } />
+      ) : undefined} />
 
-      {showNew && (
+      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+      {userRole === "admin" && showNew && (
         <Card className="p-5">
           <h3 className="font-semibold mb-4">Book Appointment</h3>
           {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
@@ -648,10 +683,6 @@ function Appointments() {
                 {["Consultation", "Follow-up", "New Patient", "Procedure", "Emergency"].map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
-            <div>
-              <label className="text-xs text-[#5a6e7e] font-medium block mb-1">Notes</label>
-              <input type="text" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Reason for visit…" className="w-full border border-[#d1dce5] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0a6e6e]" />
-            </div>
           </div>
           <div className="mt-4 flex gap-2">
             <Btn onClick={bookAppointment}>Book Appointment</Btn>
@@ -660,7 +691,7 @@ function Appointments() {
         </Card>
       )}
 
-      <div className="flex gap-2 flex-wrap">
+      {userRole === "admin" && <div className="flex gap-2 flex-wrap">
         {filters.map(f => (
           <button
             key={f}
@@ -670,7 +701,7 @@ function Appointments() {
             {f}
           </button>
         ))}
-      </div>
+      </div>}
 
       <div className="space-y-3">
         {filtered.map(a => (
@@ -693,7 +724,7 @@ function Appointments() {
             </div>
             <div className="flex items-center gap-3">
               <Badge label={a.status} color={statusColor(a.status)} />
-              {a.status === "Pending" && <Btn small onClick={() => updateAppointmentStatus(a.id, "Confirmed")}>Confirm</Btn>}
+              {userRole === "admin" && a.status === "Pending" && <Btn small onClick={() => updateAppointmentStatus(a.id, "Confirmed")}>Confirm</Btn>}
               {a.status !== "Cancelled" && <Btn variant="outline" small onClick={() => updateAppointmentStatus(a.id, "Cancelled")}>Cancel</Btn>}
               <span className="text-xs text-[#5a6e7e] font-mono">{a.id}</span>
             </div>
@@ -706,12 +737,63 @@ function Appointments() {
 
 // ─── DOCTOR SCHEDULES ────────────────────────────────────────────────────────
 
-function Schedules() {
-  const { doctors, appointments } = useClinic();
+function Schedules({ userRole, token }: { userRole: "admin" | "doctor"; token: string }) {
+  const { doctors, appointments, setAppointments } = useClinic();
+  const [selectedDate, setSelectedDate] = useState(() => localDateString());
+  const [error, setError] = useState("");
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+
+  if (userRole === "doctor") {
+    const doctor = doctors[0];
+    const dailyAppointments = appointments.filter(appointment => appointment.date === selectedDate);
+
+    const cancelAppointment = async (appointmentId: string) => {
+      setError("");
+      try {
+        const response = await fetch(`${API_URL}/api/appointments/${encodeURIComponent(appointmentId)}/cancel`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Unable to cancel appointment");
+        setAppointments(current => current.map(appointment => appointment.id === appointmentId ? result.appointment : appointment));
+      } catch (cancelError) {
+        setError(cancelError instanceof Error ? cancelError.message : "Unable to cancel appointment");
+      }
+    };
+
+    return (
+      <div className="space-y-5">
+        <SectionHeader title={`My Schedule${doctor ? ` · ${doctor.name}` : ""}`} />
+        <label className="flex flex-col gap-1 text-xs font-medium text-[#5a6e7e] max-w-56">
+          Schedule date
+          <input type="date" value={selectedDate} onChange={event => setSelectedDate(event.target.value)} className="border border-[#d1dce5] rounded-lg px-3 py-2 text-sm bg-white text-[#0f1923]" />
+        </label>
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+        {!doctor && <Card className="p-4"><p className="text-sm text-[#5a6e7e]">Your account is not linked to a doctor profile yet. Ask an administrator to match your account name to your clinic doctor profile.</p></Card>}
+        {doctor && dailyAppointments.length === 0 && <Card className="p-4"><p className="text-sm text-[#5a6e7e]">No appointments on this date.</p></Card>}
+        {dailyAppointments.map(appointment => (
+          <Card key={appointment.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-semibold text-[#0f1923]">{appointment.time} · {appointment.patient}</p>
+              <p className="text-sm text-[#5a6e7e]">{appointment.type} · {appointment.duration} min</p>
+              <p className="text-xs text-[#5a6e7e] mt-1">{appointment.notes}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Badge label={appointment.status} color={statusColor(appointment.status)} />
+              {appointment.status !== "Cancelled" && <Btn variant="outline" small onClick={() => {
+                if (window.confirm(`Cancel ${appointment.patient}'s appointment at ${appointment.time}?`)) void cancelAppointment(appointment.id);
+              }}>Cancel appointment</Btn>}
+            </div>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
-      <SectionHeader title="Doctor Schedules" />
+      <SectionHeader title="Clinic Schedules" />
       <div className="grid grid-cols-1 gap-4">
         {doctors.map(d => (
           <Card key={d.id} className="p-5">
@@ -1253,10 +1335,12 @@ function Reminders() {
 
 export default function App() {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem("clinic_admin_token"));
+  const [isLoadingClinicState, setIsLoadingClinicState] = useState(() => Boolean(localStorage.getItem("clinic_admin_token")));
   const [adminName, setAdminName] = useState(() => localStorage.getItem("clinic_admin_name") || "Admin");
   const [userRole, setUserRole] = useState<"admin" | "doctor">(() => localStorage.getItem("clinic_user_role") === "doctor" ? "doctor" : "admin");
   const [view, setView] = useState<View>("dashboard");
   const [patients, setPatients] = useState(initialPatients);
+  const [doctors, setDoctors] = useState(initialDoctors);
   const [appointments, setAppointments] = useState(initialAppointments);
   const [records, setRecords] = useState(initialRecords);
   const [prescriptions, setPrescriptions] = useState(initialPrescriptions);
@@ -1276,15 +1360,18 @@ export default function App() {
     hasLoadedDatabase.current = false;
     setDatabaseReady(false);
     setAuthToken(null);
+    setView("dashboard");
   };
 
   useEffect(() => {
     if (!authToken) {
       hasLoadedDatabase.current = false;
       setDatabaseReady(false);
+      setIsLoadingClinicState(false);
       return;
     }
 
+    setIsLoadingClinicState(true);
     fetch(`${API_URL}/api/clinic-state`, {
       headers: { Authorization: `Bearer ${authToken}` },
     })
@@ -1299,19 +1386,25 @@ export default function App() {
         return response.ok ? response.json() : Promise.reject(new Error("Database API unavailable"));
       })
       .then(state => {
-        const doctorNames = new Set(initialDoctors.map(doctor => doctor.name));
-        const availableAppointments = state.appointments.filter((appointment: typeof initialAppointments[number]) => doctorNames.has(appointment.doctor));
         setPatients(state.patients);
-        setAppointments(availableAppointments);
-        setRecords(state.records.filter((record: typeof initialRecords[number]) => doctorNames.has(record.doctor)));
-        setPrescriptions(state.prescriptions.filter((prescription: typeof initialPrescriptions[number]) => doctorNames.has(prescription.doctor)));
+        setDoctors(state.doctors);
+        setAppointments(state.appointments);
+        setRecords(state.records);
+        setPrescriptions(state.prescriptions);
         setBills(state.bills);
-        const appointmentIds = new Set(availableAppointments.map((appointment: typeof initialAppointments[number]) => appointment.id));
-        setReminders(state.reminders.filter((reminder: typeof initialReminders[number]) => appointmentIds.has(reminder.appointmentId)));
+        setReminders(state.reminders);
         hasLoadedDatabase.current = true;
         setDatabaseReady(true);
+        setIsLoadingClinicState(false);
       })
-      .catch(() => setDatabaseReady(false));
+      .catch(() => {
+        setDatabaseReady(false);
+        setIsLoadingClinicState(false);
+        localStorage.removeItem("clinic_admin_token");
+        localStorage.removeItem("clinic_admin_name");
+        localStorage.removeItem("clinic_user_role");
+        setAuthToken(null);
+      });
   }, [authToken]);
 
   useEffect(() => {
@@ -1335,24 +1428,36 @@ export default function App() {
     }).catch(() => setDatabaseReady(false));
   }, [authToken, patients, appointments, records, prescriptions, bills, reminders]);
 
-  if (!authToken) return <Login onLogin={(token, name, role) => { setAuthToken(token); setAdminName(name); setUserRole(role); }} />;
+  const adminViews: View[] = ["dashboard", "patients", "appointments", "schedules", "billing", "approvals"];
+  const doctorViews: View[] = ["dashboard", "patients", "schedules", "records", "prescriptions", "reminders"];
+  const allowedViews = userRole === "admin" ? adminViews : doctorViews;
+
+  useEffect(() => {
+    if (!allowedViews.includes(view)) setView("dashboard");
+  }, [userRole, view]);
+
+  if (!authToken) return <Login onLogin={(token, name, role) => { setIsLoadingClinicState(true); setAuthToken(token); setAdminName(name); setUserRole(role); }} />;
+  if (isLoadingClinicState) return <div className="min-h-screen flex items-center justify-center bg-[#f0f4f8] text-sm text-[#5a6e7e]">Loading clinic workspace...</div>;
 
   const views: Record<View, React.ReactNode> = {
     dashboard: <Dashboard adminName={adminName} userRole={userRole} />,
-    patients: <Patients />,
-    appointments: <Appointments />,
-    schedules: <Schedules />,
+    patients: <Patients userRole={userRole} />,
+    appointments: <Appointments userRole={userRole} token={authToken} />,
+    schedules: <Schedules userRole={userRole} token={authToken} />,
     records: <Records />,
     prescriptions: <Prescriptions />,
     billing: <Billing />,
     reminders: <Reminders />,
-    approvals: <Approvals token={authToken} />,
+    approvals: <Approvals
+      token={authToken}
+      onDoctorApproved={doctor => setDoctors(current => [...current.filter(existing => existing.email !== doctor.email), doctor])}
+      onDoctorRemoved={email => setDoctors(current => current.filter(doctor => doctor.email !== email))}
+    />,
   };
-  const doctorViews: View[] = ["dashboard", "patients", "appointments", "records", "prescriptions", "reminders"];
-  const visibleNavItems = navItems.filter(item => userRole === "admin" || doctorViews.includes(item.id));
+  const visibleNavItems = navItems.filter(item => allowedViews.includes(item.id));
 
   return (
-    <ClinicContext.Provider value={{ patients, setPatients, doctors: initialDoctors, appointments, setAppointments, records, setRecords, prescriptions, setPrescriptions, bills, setBills, reminders, setReminders }}>
+    <ClinicContext.Provider value={{ patients, setPatients, doctors, appointments, setAppointments, records, setRecords, prescriptions, setPrescriptions, bills, setBills, reminders, setReminders }}>
       <div className="min-h-screen w-full flex flex-col md:h-screen md:flex-row bg-[#f0f4f8] overflow-hidden">
       <header className="md:hidden shrink-0 bg-[#0a6e6e] text-white">
         <div className="flex items-center justify-between px-4 py-3">

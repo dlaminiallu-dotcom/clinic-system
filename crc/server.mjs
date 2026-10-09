@@ -61,6 +61,60 @@ function canUseLocalFallback() {
   return process.env.NODE_ENV !== "production";
 }
 
+function normalizeDoctorName(name) {
+  return String(name || "").trim().replace(/^dr\.?\s*/i, "").toLowerCase().replace(/\s+/g, " ");
+}
+
+function doctorProfileForUser(state, user) {
+  return (state?.doctors || []).find(doctor => normalizeEmail(doctor.email) === normalizeEmail(user.email))
+    || (state?.doctors || []).find(doctor => normalizeDoctorName(doctor.name) === normalizeDoctorName(user.name));
+}
+
+function isOwnedByDoctor(record, user) {
+  return normalizeDoctorName(record?.doctor) === normalizeDoctorName(user.doctorName || user.name);
+}
+
+function doctorProfileForAccount(state, user) {
+  const currentDoctors = state.doctors || [];
+  if (currentDoctors.some(doctor => normalizeDoctorName(doctor.name) === normalizeDoctorName(user.name) || normalizeEmail(doctor.email) === normalizeEmail(user.email))) {
+    return state;
+  }
+  const displayName = /^dr\.?\s/i.test(user.name) ? user.name : `Dr. ${user.name}`;
+  return {
+    ...state,
+    doctors: [...currentDoctors, {
+      id: `D-${crypto.randomUUID().slice(0, 8)}`,
+      name: displayName,
+      specialty: "General Practice",
+      phone: "",
+      email: user.email,
+      availability: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      status: "On Duty",
+    }],
+  };
+}
+
+function assignedPatientIds(state, user) {
+  return new Set([
+    ...(state.patients || []).filter(patient => normalizeDoctorName(patient.assignedDoctor) === normalizeDoctorName(user.doctorName || user.name)).map(patient => patient.id),
+    ...(state.appointments || []).filter(appointment => isOwnedByDoctor(appointment, user)).map(appointment => appointment.patientId),
+    ...(state.records || []).filter(record => isOwnedByDoctor(record, user)).map(record => record.patientId),
+    ...(state.prescriptions || []).filter(prescription => isOwnedByDoctor(prescription, user)).map(prescription => prescription.patientId),
+  ]);
+}
+
+function mergeOwnedRows(currentRows = [], submittedRows = [], user, patientIds) {
+  const owned = new Map(currentRows.filter(row => isOwnedByDoctor(row, user)).map(row => [row.id, row]));
+  const submitted = submittedRows.filter(row => isOwnedByDoctor(row, user) && patientIds.has(row.patientId));
+  for (const row of submitted) owned.set(row.id, row);
+  const submittedIds = new Set(submitted.map(row => row.id));
+  const currentOwnedIds = new Set(currentRows.filter(row => isOwnedByDoctor(row, user)).map(row => row.id));
+  return [
+    ...currentRows.filter(row => !isOwnedByDoctor(row, user)),
+    ...[...owned.values()].filter(row => submittedIds.has(row.id) || !currentOwnedIds.has(row.id)),
+  ];
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   return { salt, hash: crypto.scryptSync(password, salt, 64).toString("hex") };
 }
@@ -116,7 +170,8 @@ function requireRole(...allowedRoles) {
     if (!user || !allowedRoles.includes(user.role) || user.role !== claims.role || user.auth_version !== claims.ver) {
       return response.status(403).json({ error: "This account does not have access to this area" });
     }
-    request.user = { email: claims.sub, role: user.role };
+    const doctorProfile = user.role === "doctor" ? doctorProfileForUser(localState, user) : null;
+    request.user = { email: claims.sub, name: user.name, doctorName: doctorProfile?.name, role: user.role };
     return next();
   }
 
@@ -124,7 +179,7 @@ function requireRole(...allowedRoles) {
 
   const { data: user, error } = await supabase
     .from("clinic_users")
-    .select("role, auth_version")
+    .select("name, role, auth_version")
     .eq("email", claims.sub)
     .maybeSingle();
   if (error) return response.status(500).json({ error: "Unable to verify account access" });
@@ -132,7 +187,17 @@ function requireRole(...allowedRoles) {
     return response.status(403).json({ error: "This account does not have access to this area" });
   }
 
-  request.user = { email: claims.sub, role: user.role };
+  let doctorName;
+  if (user.role === "doctor") {
+    const { data: stateRow, error: stateError } = await supabase
+      .from("clinic_state")
+      .select("state")
+      .eq("state_key", "main")
+      .maybeSingle();
+    if (stateError) return response.status(500).json({ error: "Unable to verify doctor profile" });
+    doctorName = doctorProfileForUser(stateRow?.state || initialState, { email: claims.sub, name: user.name })?.name;
+  }
+  request.user = { email: claims.sub, name: user.name, doctorName, role: user.role };
   next();
   };
 }
@@ -140,15 +205,80 @@ function requireRole(...allowedRoles) {
 const requireAuth = requireRole("admin", "doctor");
 const requireAdmin = requireRole("admin");
 
-function clinicStateForRole(state, role) {
-  return role === "admin" ? state : { ...state, bills: [] };
+function clinicStateForRole(state, user) {
+  if (user.role === "admin") {
+    return {
+      ...state,
+      patients: (state.patients || []).map(({ dob, gender, blood, address, ...patient }) => ({ ...patient, dob: "", gender: "", blood: "", address: "" })),
+      appointments: (state.appointments || []).map(appointment => ({ ...appointment, notes: "" })),
+      records: [],
+      prescriptions: [],
+      reminders: (state.reminders || []).map(reminder => ({ ...reminder, message: "" })),
+    };
+  }
+
+  const patientIds = assignedPatientIds(state, user);
+  return {
+    ...state,
+    patients: (state.patients || []).filter(patient => patientIds.has(patient.id)),
+    doctors: (state.doctors || []).filter(doctor => normalizeEmail(doctor.email) === normalizeEmail(user.email) || normalizeDoctorName(doctor.name) === normalizeDoctorName(user.doctorName || user.name)),
+    appointments: (state.appointments || []).filter(appointment => isOwnedByDoctor(appointment, user)),
+    records: (state.records || []).filter(record => isOwnedByDoctor(record, user)),
+    prescriptions: (state.prescriptions || []).filter(prescription => isOwnedByDoctor(prescription, user)),
+    bills: [],
+    reminders: (state.reminders || []).filter(reminder => {
+      const appointment = (state.appointments || []).find(candidate => candidate.id === reminder.appointmentId);
+      return appointment && isOwnedByDoctor(appointment, user);
+    }),
+  };
 }
 
-function mergeClinicState(currentState, submittedState, role) {
+function appointmentForRole(appointment, user) {
+  return user.role === "admin" ? { ...appointment, notes: "" } : appointment;
+}
+
+function mergeClinicState(currentState, submittedState, user) {
   const nextState = { ...currentState, ...submittedState };
-  if (role !== "admin") {
-    nextState.bills = currentState.bills || [];
+  if (user.role === "admin") {
+    nextState.records = currentState.records || initialState.records;
+    nextState.prescriptions = currentState.prescriptions || initialState.prescriptions;
+    nextState.patients = (submittedState.patients || currentState.patients || []).map(patient => {
+      const existing = (currentState.patients || []).find(candidate => candidate.id === patient.id);
+      return existing
+        ? { ...patient, dob: existing.dob, gender: existing.gender, blood: existing.blood, address: existing.address }
+        : { ...patient, dob: "", gender: "", blood: "", address: "" };
+    });
+    nextState.appointments = (submittedState.appointments || currentState.appointments || []).map(appointment => {
+      const existing = (currentState.appointments || []).find(candidate => candidate.id === appointment.id);
+      return existing ? { ...appointment, notes: existing.notes } : appointment;
+    });
+    nextState.reminders = currentState.reminders || initialState.reminders;
     nextState.doctors = currentState.doctors || initialState.doctors;
+    return nextState;
+  }
+
+  const patientIds = assignedPatientIds(currentState, user);
+  const currentPatients = currentState.patients || [];
+  const submittedPatients = submittedState.patients || [];
+  nextState.patients = [
+    ...currentPatients.map(patient => {
+      if (!patientIds.has(patient.id)) return patient;
+      const submittedPatient = submittedPatients.find(candidate => candidate.id === patient.id);
+      return submittedPatient
+        ? { ...submittedPatient, assignedDoctor: patient.assignedDoctor || user.doctorName || user.name }
+        : patient;
+    }),
+    ...submittedPatients
+      .filter(patient => !currentPatients.some(current => current.id === patient.id))
+      .map(patient => ({ ...patient, assignedDoctor: user.doctorName || user.name })),
+  ];
+  nextState.records = mergeOwnedRows(currentState.records, submittedState.records, user, patientIds);
+  nextState.prescriptions = mergeOwnedRows(currentState.prescriptions, submittedState.prescriptions, user, patientIds);
+  nextState.reminders = currentState.reminders || [];
+  nextState.appointments = currentState.appointments || [];
+  nextState.doctors = currentState.doctors || initialState.doctors;
+  if (user.role === "doctor") {
+    nextState.bills = currentState.bills || [];
   }
   return nextState;
 }
@@ -344,9 +474,11 @@ app.post("/api/admin/users/:id/approve", requireAdmin, async (request, response)
   if (useLocalFallback) {
     const user = [...localUsers.values()].find(candidate => candidate.id === request.params.id && candidate.role === "pending");
     if (!user) return response.status(404).json({ error: "Pending account not found" });
+    localState = doctorProfileForAccount(localState, user);
     user.role = "doctor";
     user.auth_version = "";
-    return response.json({ ok: true });
+    const doctor = localState.doctors.find(profile => normalizeEmail(profile.email) === normalizeEmail(user.email));
+    return response.json({ ok: true, doctor });
   }
 
   try {
@@ -355,11 +487,23 @@ app.post("/api/admin/users/:id/approve", requireAdmin, async (request, response)
       .update({ role: "doctor", auth_version: "" })
       .eq("id", request.params.id)
       .eq("role", "pending")
-      .select("id")
+      .select("id, name, email")
       .maybeSingle();
     if (error) throw error;
     if (!data) return response.status(404).json({ error: "Pending account not found" });
-    response.json({ ok: true });
+    const { data: stateRow, error: stateReadError } = await getSupabase()
+      .from("clinic_state")
+      .select("state")
+      .eq("state_key", "main")
+      .maybeSingle();
+    if (stateReadError) throw stateReadError;
+    const nextState = doctorProfileForAccount(stateRow?.state || initialState, data);
+    const { error: stateWriteError } = await getSupabase()
+      .from("clinic_state")
+      .upsert({ state_key: "main", state: nextState });
+    if (stateWriteError) throw stateWriteError;
+    const doctor = nextState.doctors.find(profile => normalizeEmail(profile.email) === normalizeEmail(data.email));
+    response.json({ ok: true, doctor });
   } catch (error) {
     if (isNetworkFailure(error) && !canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
     response.status(error.status || 500).json({ error: error.message || "Unable to approve account" });
@@ -396,8 +540,9 @@ app.delete("/api/admin/doctors/:id", requireAdmin, async (request, response) => 
   if (useLocalFallback) {
     const entry = [...localUsers.entries()].find(([, user]) => user.id === request.params.id && user.role === "doctor");
     if (!entry) return response.status(404).json({ error: "Doctor account not found" });
+    localState.doctors = (localState.doctors || []).filter(doctor => normalizeEmail(doctor.email) !== normalizeEmail(entry[1].email) && normalizeDoctorName(doctor.name) !== normalizeDoctorName(entry[1].name));
     localUsers.delete(entry[0]);
-    return response.json({ ok: true });
+    return response.json({ ok: true, email: entry[1].email });
   }
 
   try {
@@ -406,14 +551,73 @@ app.delete("/api/admin/doctors/:id", requireAdmin, async (request, response) => 
       .delete()
       .eq("id", request.params.id)
       .eq("role", "doctor")
-      .select("id")
+      .select("id, name, email")
       .maybeSingle();
     if (error) throw error;
     if (!data) return response.status(404).json({ error: "Doctor account not found" });
-    response.json({ ok: true });
+    const { data: stateRow, error: stateReadError } = await getSupabase()
+      .from("clinic_state")
+      .select("state")
+      .eq("state_key", "main")
+      .maybeSingle();
+    if (stateReadError) throw stateReadError;
+    if (stateRow?.state) {
+      const nextState = {
+        ...stateRow.state,
+        doctors: (stateRow.state.doctors || []).filter(doctor => normalizeEmail(doctor.email) !== normalizeEmail(data.email) && normalizeDoctorName(doctor.name) !== normalizeDoctorName(data.name)),
+      };
+      const { error: stateWriteError } = await getSupabase()
+        .from("clinic_state")
+        .upsert({ state_key: "main", state: nextState });
+      if (stateWriteError) throw stateWriteError;
+    }
+    response.json({ ok: true, email: data.email });
   } catch (error) {
     if (isNetworkFailure(error) && !canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
     response.status(error.status || 500).json({ error: error.message || "Unable to remove doctor account" });
+  }
+});
+
+app.patch("/api/appointments/:id/cancel", requireAuth, async (request, response) => {
+  const cancelForUser = state => {
+    const appointment = (state.appointments || []).find(candidate => candidate.id === request.params.id);
+    if (!appointment) return { error: "Appointment not found", status: 404 };
+    if (request.user.role === "doctor" && !isOwnedByDoctor(appointment, request.user)) {
+      return { error: "You can only cancel your own appointments", status: 403 };
+    }
+    if (appointment.status === "Cancelled") return { state, appointment };
+    const updatedAppointment = { ...appointment, status: "Cancelled" };
+    return {
+      state: { ...state, appointments: state.appointments.map(candidate => candidate.id === appointment.id ? updatedAppointment : candidate) },
+      appointment: updatedAppointment,
+    };
+  };
+
+  if (useLocalFallback) {
+    const result = cancelForUser(localState);
+    if (result.error) return response.status(result.status).json({ error: result.error });
+    localState = result.state;
+    return response.json({ ok: true, appointment: appointmentForRole(result.appointment, request.user) });
+  }
+
+  try {
+    const { data: row, error: readError } = await getSupabase()
+      .from("clinic_state")
+      .select("state")
+      .eq("state_key", "main")
+      .maybeSingle();
+    if (readError) throw readError;
+    if (!row?.state) return response.status(404).json({ error: "Appointment not found" });
+    const result = cancelForUser(row.state);
+    if (result.error) return response.status(result.status).json({ error: result.error });
+    const { error: saveError } = await getSupabase()
+      .from("clinic_state")
+      .upsert({ state_key: "main", state: result.state });
+    if (saveError) throw saveError;
+    response.json({ ok: true, appointment: appointmentForRole(result.appointment, request.user) });
+  } catch (error) {
+    if (isNetworkFailure(error) && !canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
+    response.status(error.status || 500).json({ error: error.message || "Unable to cancel appointment" });
   }
 });
 
@@ -437,7 +641,7 @@ app.get("/api/health", async (_request, response) => {
 });
 
 app.get("/api/clinic-state", requireAuth, async (request, response) => {
-  if (useLocalFallback) return response.json(clinicStateForRole(localState, request.user.role));
+  if (useLocalFallback) return response.json(clinicStateForRole(localState, request.user));
 
   try {
     const { data: row, error } = await getSupabase().from("clinic_state").select("state").eq("state_key", "main").maybeSingle();
@@ -445,14 +649,14 @@ app.get("/api/clinic-state", requireAuth, async (request, response) => {
     if (!row) {
       const { error: insertError } = await getSupabase().from("clinic_state").insert({ state_key: "main", state: initialState });
       if (insertError) throw insertError;
-      return response.json(clinicStateForRole(initialState, request.user.role));
+      return response.json(clinicStateForRole(initialState, request.user));
     }
-    response.json(clinicStateForRole(row.state, request.user.role));
+    response.json(clinicStateForRole(row.state, request.user));
   } catch (error) {
     if (isNetworkFailure(error)) {
       if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
-      return response.json(localState);
+      return response.json(clinicStateForRole(localState, request.user));
     }
     response.status(500).json({ error: error.message });
   }
@@ -460,7 +664,7 @@ app.get("/api/clinic-state", requireAuth, async (request, response) => {
 
 app.put("/api/clinic-state", requireAuth, async (request, response) => {
   if (useLocalFallback) {
-    localState = JSON.parse(JSON.stringify(mergeClinicState(localState, request.body, request.user.role)));
+    localState = JSON.parse(JSON.stringify(mergeClinicState(localState, request.body, request.user)));
     return response.json({ ok: true });
   }
 
@@ -473,7 +677,7 @@ app.put("/api/clinic-state", requireAuth, async (request, response) => {
         .eq("state_key", "main")
         .maybeSingle();
       if (readError) throw readError;
-      nextState = mergeClinicState(row?.state || initialState, request.body, request.user.role);
+      nextState = mergeClinicState(row?.state || initialState, request.body, request.user);
     }
     const { error } = await getSupabase().from("clinic_state").upsert({ state_key: "main", state: nextState });
     if (error) throw error;
@@ -482,7 +686,7 @@ app.put("/api/clinic-state", requireAuth, async (request, response) => {
     if (isNetworkFailure(error)) {
       if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
-      localState = JSON.parse(JSON.stringify(mergeClinicState(localState, request.body, request.user.role)));
+      localState = JSON.parse(JSON.stringify(mergeClinicState(localState, request.body, request.user)));
       return response.json({ ok: true });
     }
     response.status(500).json({ error: error.message });
