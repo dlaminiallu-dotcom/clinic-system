@@ -119,16 +119,23 @@ function Login({ onLogin }: { onLogin: (token: string, name: string, role: "admi
 
 function Approvals({ token }: { token: string }) {
   const [users, setUsers] = useState<{ id: string; name: string; email: string; created_at?: string }[]>([]);
+  const [doctors, setDoctors] = useState<{ id: string; name: string; email: string; created_at?: string }[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
   const loadPendingUsers = () => {
     setLoading(true);
-    fetch(`${API_URL}/api/admin/pending-users`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(async response => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Unable to load pending accounts");
-        setUsers(result);
+    const headers = { Authorization: `Bearer ${token}` };
+    Promise.all([
+      fetch(`${API_URL}/api/admin/pending-users`, { headers }),
+      fetch(`${API_URL}/api/admin/doctors`, { headers }),
+    ])
+      .then(async ([pendingResponse, doctorsResponse]) => {
+        const [pending, activeDoctors] = await Promise.all([pendingResponse.json(), doctorsResponse.json()]);
+        if (!pendingResponse.ok) throw new Error(pending.error || "Unable to load pending accounts");
+        if (!doctorsResponse.ok) throw new Error(activeDoctors.error || "Unable to load doctors");
+        setUsers(pending);
+        setDoctors(activeDoctors);
         setError("");
       })
       .catch(loadError => setError(loadError instanceof Error ? loadError.message : "Unable to load pending accounts"))
@@ -147,27 +154,63 @@ function Approvals({ token }: { token: string }) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Unable to approve account");
       setUsers(current => current.filter(user => user.id !== userId));
+      loadPendingUsers();
     } catch (approvalError) {
       setError(approvalError instanceof Error ? approvalError.message : "Unable to approve account");
     }
   };
 
+  const removeDoctor = async (doctor: { id: string; name: string }) => {
+    if (!window.confirm(`Remove ${doctor.name}'s doctor account? They will lose access immediately.`)) return;
+    setError("");
+    try {
+      const response = await fetch(`${API_URL}/api/admin/doctors/${encodeURIComponent(doctor.id)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to remove doctor account");
+      setDoctors(current => current.filter(currentDoctor => currentDoctor.id !== doctor.id));
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "Unable to remove doctor account");
+    }
+  };
+
   return (
     <div className="space-y-5">
-      <SectionHeader title="Pending Doctor Approvals" action={<Btn variant="outline" onClick={loadPendingUsers}>Refresh</Btn>} />
+      <SectionHeader title="Doctor Accounts" action={<Btn variant="outline" onClick={loadPendingUsers}>Refresh</Btn>} />
       {error && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
-      {loading ? <p className="text-sm text-[#5a6e7e]">Loading requests...</p> : users.length === 0 ? (
-        <Card className="p-5"><p className="text-sm text-[#5a6e7e]">No doctor access requests are waiting for approval.</p></Card>
-      ) : users.map(user => (
-        <Card key={user.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="min-w-0">
-            <p className="font-semibold text-[#0f1923]">{user.name}</p>
-            <p className="text-sm text-[#5a6e7e] break-all">{user.email}</p>
-            {user.created_at && <p className="text-xs text-[#5a6e7e] mt-1">Requested {new Date(user.created_at).toLocaleDateString()}</p>}
-          </div>
-          <Btn onClick={() => approveUser(user.id)}>Approve doctor</Btn>
-        </Card>
-      ))}
+      {loading ? <p className="text-sm text-[#5a6e7e]">Loading doctor accounts...</p> : <>
+        <section className="space-y-3">
+          <h3 className="font-semibold text-[#0f1923]">Awaiting approval ({users.length})</h3>
+          {users.length === 0 ? (
+            <Card className="p-4"><p className="text-sm text-[#5a6e7e]">No doctor access requests are waiting.</p></Card>
+          ) : users.map(user => (
+            <Card key={user.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-semibold text-[#0f1923]">{user.name}</p>
+                <p className="text-sm text-[#5a6e7e] break-all">{user.email}</p>
+                {user.created_at && <p className="text-xs text-[#5a6e7e] mt-1">Requested {new Date(user.created_at).toLocaleDateString()}</p>}
+              </div>
+              <Btn onClick={() => approveUser(user.id)}>Approve doctor</Btn>
+            </Card>
+          ))}
+        </section>
+        <section className="space-y-3 pt-4">
+          <h3 className="font-semibold text-[#0f1923]">Approved doctors ({doctors.length})</h3>
+          {doctors.length === 0 ? (
+            <Card className="p-4"><p className="text-sm text-[#5a6e7e]">No doctor accounts have been approved.</p></Card>
+          ) : doctors.map(doctor => (
+            <Card key={doctor.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-semibold text-[#0f1923]">{doctor.name}</p>
+                <p className="text-sm text-[#5a6e7e] break-all">{doctor.email}</p>
+              </div>
+              <Btn variant="outline" onClick={() => removeDoctor(doctor)}>Remove doctor</Btn>
+            </Card>
+          ))}
+        </section>
+      </>}
     </div>
   );
 }
@@ -181,7 +224,7 @@ const navItems: { id: View; label: string; icon: string }[] = [
   { id: "prescriptions", label: "Prescriptions", icon: "💊" },
   { id: "billing", label: "Billing", icon: "💳" },
   { id: "reminders", label: "SMS / Email", icon: "🔔" },
-  { id: "approvals", label: "Approvals", icon: "✓" },
+  { id: "approvals", label: "Doctors", icon: "✓" },
 ];
 
 function Badge({ label, color }: { label: string; color: string }) {
@@ -247,7 +290,7 @@ function StatTile({ label, value, sub, accent }: { label: string; value: string 
   );
 }
 
-function Dashboard({ adminName }: { adminName: string }) {
+function Dashboard({ adminName, userRole }: { adminName: string; userRole: "admin" | "doctor" }) {
   const { patients, doctors, appointments, prescriptions, bills, reminders } = useClinic();
   const surname = adminName.trim().split(/\s+/).filter(Boolean).at(-1) || "Admin";
   const todayApts = appointments.filter(a => a.date === "2026-09-10");
@@ -258,17 +301,17 @@ function Dashboard({ adminName }: { adminName: string }) {
         <h1 className="text-2xl font-bold text-[#0f1923]">Good morning, Dr. {surname}</h1>
         <p className="text-sm text-[#5a6e7e]">Thursday, September 10, 2026 · Greenfield Medical Clinic</p>
       </div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-2 ${userRole === "admin" ? "lg:grid-cols-4" : "lg:grid-cols-3"} gap-4`}>
         <StatTile label="Patients" value={patients.length} sub="+1 this week" />
         <StatTile label="Today's Appointments" value={todayApts.length} sub="2 confirmed" accent />
         <StatTile label="Active Prescriptions" value={prescriptions.filter(p => p.status === "Active").length} sub="Across 3 patients" />
-        <StatTile label="Pending Invoices" value={formatRand(outstanding)} sub={`${bills.filter(b => b.total > b.paid).length} bills outstanding`} />
+        {userRole === "admin" && <StatTile label="Pending Invoices" value={formatRand(outstanding)} sub={`${bills.filter(b => b.total > b.paid).length} bills outstanding`} />}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 p-5">
           <h3 className="font-semibold text-[#0f1923] mb-4">Today's Appointments</h3>
           <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-sm">
+          <table className="w-full min-w-155 text-sm">
             <thead>
               <tr className="text-left text-xs text-[#5a6e7e] border-b border-[#d1dce5]">
                 <th className="pb-2 font-medium">Time</th>
@@ -322,8 +365,8 @@ function Dashboard({ adminName }: { adminName: string }) {
           </div>
         </Card>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card className="p-5">
+      <div className={`grid grid-cols-1 ${userRole === "admin" ? "lg:grid-cols-2" : ""} gap-4`}>
+        {userRole === "admin" && <Card className="p-5">
           <h3 className="font-semibold text-[#0f1923] mb-4">Recent Billing Activity</h3>
           <div className="space-y-2">
             {bills.map(b => (
@@ -339,7 +382,7 @@ function Dashboard({ adminName }: { adminName: string }) {
               </div>
             ))}
           </div>
-        </Card>
+        </Card>}
         <Card className="p-5">
           <h3 className="font-semibold text-[#0f1923] mb-4">Reminder Queue</h3>
           <div className="space-y-2">
@@ -457,7 +500,7 @@ function Patients() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 overflow-hidden">
           <div className="overflow-x-auto">
-          <table className="w-full min-w-[700px] text-sm">
+          <table className="w-full min-w-175 text-sm">
             <thead className="bg-[#f0f4f8]">
               <tr className="text-left text-xs text-[#5a6e7e]">
                 {["ID", "Name", "DOB", "Blood", "Phone", "Last Visit", "Status"].map(h => (
@@ -1022,7 +1065,7 @@ function Billing() {
         <div className="lg:col-span-3">
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
-            <table className="w-full min-w-[600px] text-sm">
+            <table className="w-full min-w-150 text-sm">
               <thead className="bg-[#f0f4f8]">
                 <tr className="text-left text-xs text-[#5a6e7e]">
                   {["Invoice", "Patient", "Date", "Total", "Paid", "Status"].map(h => (
@@ -1295,7 +1338,7 @@ export default function App() {
   if (!authToken) return <Login onLogin={(token, name, role) => { setAuthToken(token); setAdminName(name); setUserRole(role); }} />;
 
   const views: Record<View, React.ReactNode> = {
-    dashboard: <Dashboard adminName={adminName} />,
+    dashboard: <Dashboard adminName={adminName} userRole={userRole} />,
     patients: <Patients />,
     appointments: <Appointments />,
     schedules: <Schedules />,
@@ -1305,7 +1348,8 @@ export default function App() {
     reminders: <Reminders />,
     approvals: <Approvals token={authToken} />,
   };
-  const visibleNavItems = navItems.filter(item => item.id !== "approvals" || userRole === "admin");
+  const doctorViews: View[] = ["dashboard", "patients", "appointments", "records", "prescriptions", "reminders"];
+  const visibleNavItems = navItems.filter(item => userRole === "admin" || doctorViews.includes(item.id));
 
   return (
     <ClinicContext.Provider value={{ patients, setPatients, doctors: initialDoctors, appointments, setAppointments, records, setRecords, prescriptions, setPrescriptions, bills, setBills, reminders, setReminders }}>

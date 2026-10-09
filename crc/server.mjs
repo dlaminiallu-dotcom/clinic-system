@@ -140,6 +140,19 @@ function requireRole(...allowedRoles) {
 const requireAuth = requireRole("admin", "doctor");
 const requireAdmin = requireRole("admin");
 
+function clinicStateForRole(state, role) {
+  return role === "admin" ? state : { ...state, bills: [] };
+}
+
+function mergeClinicState(currentState, submittedState, role) {
+  const nextState = { ...currentState, ...submittedState };
+  if (role !== "admin") {
+    nextState.bills = currentState.bills || [];
+    nextState.doctors = currentState.doctors || initialState.doctors;
+  }
+  return nextState;
+}
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
@@ -353,6 +366,57 @@ app.post("/api/admin/users/:id/approve", requireAdmin, async (request, response)
   }
 });
 
+app.get("/api/admin/doctors", requireAdmin, async (_request, response) => {
+  if (useLocalFallback) {
+    return response.json([...localUsers.values()]
+      .filter(user => user.role === "doctor")
+      .map(({ id, name, email }) => ({ id, name, email })));
+  }
+
+  try {
+    const { data, error } = await getSupabase()
+      .from("clinic_users")
+      .select("id, name, email, created_at")
+      .eq("role", "doctor")
+      .order("name", { ascending: true });
+    if (error) throw error;
+    response.json(data || []);
+  } catch (error) {
+    if (isNetworkFailure(error) && canUseLocalFallback()) {
+      useLocalFallback = true;
+      return response.json([...localUsers.values()]
+        .filter(user => user.role === "doctor")
+        .map(({ id, name, email }) => ({ id, name, email })));
+    }
+    response.status(error.status || 500).json({ error: error.message || "Unable to load doctors" });
+  }
+});
+
+app.delete("/api/admin/doctors/:id", requireAdmin, async (request, response) => {
+  if (useLocalFallback) {
+    const entry = [...localUsers.entries()].find(([, user]) => user.id === request.params.id && user.role === "doctor");
+    if (!entry) return response.status(404).json({ error: "Doctor account not found" });
+    localUsers.delete(entry[0]);
+    return response.json({ ok: true });
+  }
+
+  try {
+    const { data, error } = await getSupabase()
+      .from("clinic_users")
+      .delete()
+      .eq("id", request.params.id)
+      .eq("role", "doctor")
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return response.status(404).json({ error: "Doctor account not found" });
+    response.json({ ok: true });
+  } catch (error) {
+    if (isNetworkFailure(error) && !canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
+    response.status(error.status || 500).json({ error: error.message || "Unable to remove doctor account" });
+  }
+});
+
 app.get("/api/health", async (_request, response) => {
   if (useLocalFallback) {
     return response.json({ ok: true, database: "local-memory" });
@@ -372,8 +436,8 @@ app.get("/api/health", async (_request, response) => {
   }
 });
 
-app.get("/api/clinic-state", requireAuth, async (_request, response) => {
-  if (useLocalFallback) return response.json(localState);
+app.get("/api/clinic-state", requireAuth, async (request, response) => {
+  if (useLocalFallback) return response.json(clinicStateForRole(localState, request.user.role));
 
   try {
     const { data: row, error } = await getSupabase().from("clinic_state").select("state").eq("state_key", "main").maybeSingle();
@@ -381,9 +445,9 @@ app.get("/api/clinic-state", requireAuth, async (_request, response) => {
     if (!row) {
       const { error: insertError } = await getSupabase().from("clinic_state").insert({ state_key: "main", state: initialState });
       if (insertError) throw insertError;
-      return response.json(initialState);
+      return response.json(clinicStateForRole(initialState, request.user.role));
     }
-    response.json(row.state);
+    response.json(clinicStateForRole(row.state, request.user.role));
   } catch (error) {
     if (isNetworkFailure(error)) {
       if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
@@ -396,19 +460,29 @@ app.get("/api/clinic-state", requireAuth, async (_request, response) => {
 
 app.put("/api/clinic-state", requireAuth, async (request, response) => {
   if (useLocalFallback) {
-    localState = JSON.parse(JSON.stringify(request.body));
+    localState = JSON.parse(JSON.stringify(mergeClinicState(localState, request.body, request.user.role)));
     return response.json({ ok: true });
   }
 
   try {
-    const { error } = await getSupabase().from("clinic_state").upsert({ state_key: "main", state: request.body });
+    let nextState = request.body;
+    if (request.user.role !== "admin") {
+      const { data: row, error: readError } = await getSupabase()
+        .from("clinic_state")
+        .select("state")
+        .eq("state_key", "main")
+        .maybeSingle();
+      if (readError) throw readError;
+      nextState = mergeClinicState(row?.state || initialState, request.body, request.user.role);
+    }
+    const { error } = await getSupabase().from("clinic_state").upsert({ state_key: "main", state: nextState });
     if (error) throw error;
     response.json({ ok: true });
   } catch (error) {
     if (isNetworkFailure(error)) {
       if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
       useLocalFallback = true;
-      localState = JSON.parse(JSON.stringify(request.body));
+      localState = JSON.parse(JSON.stringify(mergeClinicState(localState, request.body, request.user.role)));
       return response.json({ ok: true });
     }
     response.status(500).json({ error: error.message });
