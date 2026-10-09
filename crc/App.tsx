@@ -207,7 +207,8 @@ function Dashboard({ adminName }: { adminName: string }) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 p-5">
           <h3 className="font-semibold text-[#0f1923] mb-4">Today's Appointments</h3>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[620px] text-sm">
             <thead>
               <tr className="text-left text-xs text-[#5a6e7e] border-b border-[#d1dce5]">
                 <th className="pb-2 font-medium">Time</th>
@@ -229,6 +230,7 @@ function Dashboard({ adminName }: { adminName: string }) {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
         <Card className="p-5">
           <h3 className="font-semibold text-[#0f1923] mb-4">Doctors on Duty</h3>
@@ -394,7 +396,8 @@ function Patients() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 overflow-hidden">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[700px] text-sm">
             <thead className="bg-[#f0f4f8]">
               <tr className="text-left text-xs text-[#5a6e7e]">
                 {["ID", "Name", "DOB", "Blood", "Phone", "Last Visit", "Status"].map(h => (
@@ -420,6 +423,7 @@ function Patients() {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
 
         {selected ? (
@@ -957,7 +961,8 @@ function Billing() {
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <div className="lg:col-span-3">
           <Card className="overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[600px] text-sm">
               <thead className="bg-[#f0f4f8]">
                 <tr className="text-left text-xs text-[#5a6e7e]">
                   {["Invoice", "Patient", "Date", "Total", "Paid", "Status"].map(h => (
@@ -982,6 +987,7 @@ function Billing() {
                 ))}
               </tbody>
             </table>
+            </div>
           </Card>
         </div>
         <div className="lg:col-span-2">
@@ -1237,9 +1243,38 @@ export default function App() {
 
   return (
     <ClinicContext.Provider value={{ patients, setPatients, doctors: initialDoctors, appointments, setAppointments, records, setRecords, prescriptions, setPrescriptions, bills, setBills, reminders, setReminders }}>
-      <div className="size-full flex bg-[#f0f4f8] overflow-hidden">
+      <div className="min-h-screen w-full flex flex-col md:h-screen md:flex-row bg-[#f0f4f8] overflow-hidden">
+      <header className="md:hidden shrink-0 bg-[#0a6e6e] text-white">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 shrink-0 rounded-lg bg-[#1ab8a8] flex items-center justify-center">
+              <span className="text-white font-bold text-sm">+</span>
+            </div>
+            <div className="min-w-0">
+              <p className="font-bold text-sm leading-tight">Greenfield</p>
+              <p className="text-[10px] text-[#7ec8c8]">Medical Clinic</p>
+            </div>
+          </div>
+          <button onClick={logout} className="shrink-0 text-xs text-[#d3eeee] px-2 py-1 cursor-pointer">Sign out</button>
+        </div>
+        <nav aria-label="Main navigation" className="flex gap-1 overflow-x-auto px-3 pb-2">
+          {navItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setView(item.id)}
+              aria-current={view === item.id ? "page" : undefined}
+              className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap cursor-pointer ${
+                view === item.id ? "bg-[#ffffff22] text-white" : "text-[#b7dddd] hover:bg-[#ffffff12]"
+              }`}
+            >
+              <span>{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </header>
       {/* Sidebar */}
-      <aside className="w-56 shrink-0 bg-[#0a6e6e] flex flex-col overflow-y-auto">
+      <aside className="hidden md:flex w-56 shrink-0 bg-[#0a6e6e] flex-col overflow-y-auto">
         <div className="px-5 py-6 border-b border-[#085a5a]">
           <div className="flex items-center gap-2 mb-1">
             <div className="w-7 h-7 rounded-lg bg-[#1ab8a8] flex items-center justify-center">
@@ -1278,8 +1313,8 @@ export default function App() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-6 max-w-7xl mx-auto">
+      <main className="min-w-0 w-full flex-1 overflow-y-auto">
+        <div className="p-3 sm:p-4 md:p-6 max-w-7xl mx-auto">
           <div className="relative">
             {!databaseReady && <p className="absolute right-0 -top-5 text-[10px] text-amber-700">Local mode: start the API to save changes</p>}
             {views[view]}
