@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import { patients as initialPatients, doctors as initialDoctors, appointments as initialAppointments, records as initialRecords, prescriptions as initialPrescriptions, bills as initialBills, reminders as initialReminders } from "./data";
 
-type View = "dashboard" | "patients" | "appointments" | "schedules" | "records" | "prescriptions" | "billing" | "reminders";
+type View = "dashboard" | "patients" | "appointments" | "schedules" | "records" | "prescriptions" | "billing" | "reminders" | "approvals";
 
 type ClinicState = {
   patients: typeof initialPatients;
@@ -28,8 +28,9 @@ function useClinic() {
   return context;
 }
 
-function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) {
-  const [mode, setMode] = useState<"login" | "signup">("signup");
+function Login({ onLogin }: { onLogin: (token: string, name: string, role: "admin" | "doctor") => void }) {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [role, setRole] = useState<"admin" | "doctor">("doctor");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -44,10 +45,10 @@ function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) 
       const response = await fetch(`${API_URL}/api/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, email, password, role }),
       });
       const body = await response.text();
-      let result: { token?: string; error?: string; user?: { name?: string } };
+      let result: { token?: string; error?: string; user?: { name?: string; role?: "admin" | "doctor" } };
       try {
         result = JSON.parse(body);
       } catch {
@@ -64,9 +65,11 @@ function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) 
       }
       if (!result.token) throw new Error("Login response did not include a session token");
       const signedInName = result.user?.name || name;
+      const signedInRole = result.user?.role || role;
       localStorage.setItem("clinic_admin_token", result.token);
       localStorage.setItem("clinic_admin_name", signedInName);
-      onLogin(result.token, signedInName);
+      localStorage.setItem("clinic_user_role", signedInRole);
+      onLogin(result.token, signedInName, signedInRole);
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : "Unable to sign in");
     } finally {
@@ -81,15 +84,16 @@ function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) 
           <div className="w-10 h-10 rounded-xl bg-[#0a6e6e] flex items-center justify-center">
             <span className="text-white font-bold text-lg">+</span>
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className="font-bold text-xl text-[#0f1923]">Greenfield Medical Clinic</h1>
-            <p className="text-sm text-[#5a6e7e]">Administrator account</p>
+            <p className="text-sm text-[#5a6e7e]">{mode === "signup" ? "Request doctor access" : `${role === "admin" ? "Administrator" : "Doctor"} sign in`}</p>
           </div>
         </div>
-        <div className="flex border-b border-[#d1dce5] mb-5">
-          <button type="button" onClick={() => { setMode("signup"); setError(""); }} className={`flex-1 pb-2 text-sm font-medium ${mode === "signup" ? "text-[#0a6e6e] border-b-2 border-[#0a6e6e]" : "text-[#5a6e7e]"}`}>Sign up</button>
-          <button type="button" onClick={() => { setMode("login"); setError(""); }} className={`flex-1 pb-2 text-sm font-medium ${mode === "login" ? "text-[#0a6e6e] border-b-2 border-[#0a6e6e]" : "text-[#5a6e7e]"}`}>Sign in</button>
+        <div className="grid grid-cols-2 border-b border-[#d1dce5] mb-5">
+          <button type="button" onClick={() => { setMode("login"); setRole("admin"); setError(""); }} className={`pb-2 text-sm font-medium ${mode === "login" && role === "admin" ? "text-[#0a6e6e] border-b-2 border-[#0a6e6e]" : "text-[#5a6e7e]"}`}>Admin sign in</button>
+          <button type="button" onClick={() => { setMode("login"); setRole("doctor"); setError(""); }} className={`pb-2 text-sm font-medium ${mode === "login" && role === "doctor" ? "text-[#0a6e6e] border-b-2 border-[#0a6e6e]" : "text-[#5a6e7e]"}`}>Doctor sign in</button>
         </div>
+        {mode === "login" && <button type="button" onClick={() => { setMode("signup"); setRole("doctor"); setError(""); }} className="text-sm text-[#0a6e6e] font-medium mb-4">Request doctor access</button>}
         <form onSubmit={submit} className="space-y-4">
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
           {mode === "signup" && <div>
@@ -105,10 +109,65 @@ function Login({ onLogin }: { onLogin: (token: string, name: string) => void }) 
             <input required minLength={mode === "signup" ? 8 : undefined} type="password" value={password} onChange={event => setPassword(event.target.value)} className="w-full border border-[#d1dce5] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#0a6e6e]" />
           </div>
           <button type="submit" disabled={loading} className="w-full bg-[#0a6e6e] text-white rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-[#085a5a] disabled:opacity-60">
-            {loading ? "Please wait..." : mode === "signup" ? "Create admin account" : "Sign in"}
+            {loading ? "Please wait..." : mode === "signup" ? "Request doctor account" : `Sign in as ${role === "admin" ? "Admin" : "Doctor"}`}
           </button>
         </form>
       </Card>
+    </div>
+  );
+}
+
+function Approvals({ token }: { token: string }) {
+  const [users, setUsers] = useState<{ id: string; name: string; email: string; created_at?: string }[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const loadPendingUsers = () => {
+    setLoading(true);
+    fetch(`${API_URL}/api/admin/pending-users`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Unable to load pending accounts");
+        setUsers(result);
+        setError("");
+      })
+      .catch(loadError => setError(loadError instanceof Error ? loadError.message : "Unable to load pending accounts"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { loadPendingUsers(); }, [token]);
+
+  const approveUser = async (userId: string) => {
+    setError("");
+    try {
+      const response = await fetch(`${API_URL}/api/admin/users/${encodeURIComponent(userId)}/approve`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to approve account");
+      setUsers(current => current.filter(user => user.id !== userId));
+    } catch (approvalError) {
+      setError(approvalError instanceof Error ? approvalError.message : "Unable to approve account");
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader title="Pending Doctor Approvals" action={<Btn variant="outline" onClick={loadPendingUsers}>Refresh</Btn>} />
+      {error && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
+      {loading ? <p className="text-sm text-[#5a6e7e]">Loading requests...</p> : users.length === 0 ? (
+        <Card className="p-5"><p className="text-sm text-[#5a6e7e]">No doctor access requests are waiting for approval.</p></Card>
+      ) : users.map(user => (
+        <Card key={user.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-semibold text-[#0f1923]">{user.name}</p>
+            <p className="text-sm text-[#5a6e7e] break-all">{user.email}</p>
+            {user.created_at && <p className="text-xs text-[#5a6e7e] mt-1">Requested {new Date(user.created_at).toLocaleDateString()}</p>}
+          </div>
+          <Btn onClick={() => approveUser(user.id)}>Approve doctor</Btn>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -122,6 +181,7 @@ const navItems: { id: View; label: string; icon: string }[] = [
   { id: "prescriptions", label: "Prescriptions", icon: "💊" },
   { id: "billing", label: "Billing", icon: "💳" },
   { id: "reminders", label: "SMS / Email", icon: "🔔" },
+  { id: "approvals", label: "Approvals", icon: "✓" },
 ];
 
 function Badge({ label, color }: { label: string; color: string }) {
@@ -1151,6 +1211,7 @@ function Reminders() {
 export default function App() {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem("clinic_admin_token"));
   const [adminName, setAdminName] = useState(() => localStorage.getItem("clinic_admin_name") || "Admin");
+  const [userRole, setUserRole] = useState<"admin" | "doctor">(() => localStorage.getItem("clinic_user_role") === "doctor" ? "doctor" : "admin");
   const [view, setView] = useState<View>("dashboard");
   const [patients, setPatients] = useState(initialPatients);
   const [appointments, setAppointments] = useState(initialAppointments);
@@ -1168,6 +1229,7 @@ export default function App() {
     }).catch(() => undefined);
     localStorage.removeItem("clinic_admin_token");
     localStorage.removeItem("clinic_admin_name");
+    localStorage.removeItem("clinic_user_role");
     hasLoadedDatabase.current = false;
     setDatabaseReady(false);
     setAuthToken(null);
@@ -1187,6 +1249,7 @@ export default function App() {
         if (response.status === 401 || response.status === 403) {
           localStorage.removeItem("clinic_admin_token");
           localStorage.removeItem("clinic_admin_name");
+          localStorage.removeItem("clinic_user_role");
           setAuthToken(null);
           throw new Error("Your session is not authorized. Sign in again.");
         }
@@ -1221,6 +1284,7 @@ export default function App() {
       if (response.status === 401 || response.status === 403) {
         localStorage.removeItem("clinic_admin_token");
         localStorage.removeItem("clinic_admin_name");
+        localStorage.removeItem("clinic_user_role");
         hasLoadedDatabase.current = false;
         setAuthToken(null);
       }
@@ -1228,7 +1292,7 @@ export default function App() {
     }).catch(() => setDatabaseReady(false));
   }, [authToken, patients, appointments, records, prescriptions, bills, reminders]);
 
-  if (!authToken) return <Login onLogin={(token, name) => { setAuthToken(token); setAdminName(name); }} />;
+  if (!authToken) return <Login onLogin={(token, name, role) => { setAuthToken(token); setAdminName(name); setUserRole(role); }} />;
 
   const views: Record<View, React.ReactNode> = {
     dashboard: <Dashboard adminName={adminName} />,
@@ -1239,7 +1303,9 @@ export default function App() {
     prescriptions: <Prescriptions />,
     billing: <Billing />,
     reminders: <Reminders />,
+    approvals: <Approvals token={authToken} />,
   };
+  const visibleNavItems = navItems.filter(item => item.id !== "approvals" || userRole === "admin");
 
   return (
     <ClinicContext.Provider value={{ patients, setPatients, doctors: initialDoctors, appointments, setAppointments, records, setRecords, prescriptions, setPrescriptions, bills, setBills, reminders, setReminders }}>
@@ -1258,7 +1324,7 @@ export default function App() {
           <button onClick={logout} className="shrink-0 text-xs text-[#d3eeee] px-2 py-1 cursor-pointer">Sign out</button>
         </div>
         <nav aria-label="Main navigation" className="flex gap-1 overflow-x-auto px-3 pb-2">
-          {navItems.map(item => (
+          {visibleNavItems.map(item => (
             <button
               key={item.id}
               onClick={() => setView(item.id)}
@@ -1285,7 +1351,7 @@ export default function App() {
           <p className="text-xs text-[#7ec8c8]">Medical Clinic</p>
         </div>
         <nav className="flex-1 py-4 px-3 space-y-0.5">
-          {navItems.map(item => (
+          {visibleNavItems.map(item => (
             <button
               key={item.id}
               onClick={() => setView(item.id)}
@@ -1304,8 +1370,8 @@ export default function App() {
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-full bg-[#1ab8a8] flex items-center justify-center text-white text-xs font-bold">AD</div>
             <div>
-              <p className="text-xs text-white font-medium">Admin User</p>
-              <p className="text-[10px] text-[#7ec8c8]">administrator</p>
+              <p className="text-xs text-white font-medium truncate max-w-28">{adminName}</p>
+              <p className="text-[10px] text-[#7ec8c8]">{userRole === "admin" ? "administrator" : "doctor"}</p>
             </div>
           </div>
           <button onClick={logout} className="mt-3 text-xs text-[#9fd4d4] hover:text-white cursor-pointer">Sign out</button>

@@ -28,13 +28,17 @@ begin
       and conrelid = 'public.clinic_users'::regclass
   ) then
     alter table public.clinic_users
-      add constraint clinic_users_role_check check (role in ('admin', 'pending'));
+      add constraint clinic_users_role_check check (role in ('admin', 'doctor', 'pending'));
   end if;
 end
 $$;
 
+alter table public.clinic_users drop constraint if exists clinic_users_role_check;
+alter table public.clinic_users
+  add constraint clinic_users_role_check check (role in ('admin', 'doctor', 'pending'));
+
 alter table public.clinic_state enable row level security;
 alter table public.clinic_users enable row level security;
 
--- After verifying an account, promote it with:
+-- After verifying an account, grant the initial administrator role with:
 -- update public.clinic_users set role = 'admin' where email = 'verified-admin@example.com';

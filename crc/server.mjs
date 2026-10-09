@@ -98,22 +98,23 @@ function verifyAuthToken(token) {
 
   try {
     const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (typeof claims.sub !== "string" || typeof claims.ver !== "string" || claims.role !== "admin" || claims.exp <= Math.floor(Date.now() / 1000)) return null;
+    if (typeof claims.sub !== "string" || typeof claims.ver !== "string" || !["admin", "doctor"].includes(claims.role) || claims.exp <= Math.floor(Date.now() / 1000)) return null;
     return claims;
   } catch {
     return null;
   }
 }
 
-async function requireAdmin(request, response, next) {
+function requireRole(...allowedRoles) {
+  return async (request, response, next) => {
   const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
   const claims = verifyAuthToken(token);
   if (!claims) return response.status(401).json({ error: "Authentication required" });
 
   if (useLocalFallback) {
     const user = getLocalUser(claims.sub);
-    if (!user || user.role !== "admin" || user.auth_version !== claims.ver) {
-      return response.status(403).json({ error: "Administrator access required" });
+    if (!user || !allowedRoles.includes(user.role) || user.role !== claims.role || user.auth_version !== claims.ver) {
+      return response.status(403).json({ error: "This account does not have access to this area" });
     }
     request.user = { email: claims.sub, role: user.role };
     return next();
@@ -127,13 +128,17 @@ async function requireAdmin(request, response, next) {
     .eq("email", claims.sub)
     .maybeSingle();
   if (error) return response.status(500).json({ error: "Unable to verify account access" });
-  if (!user || user.role !== "admin" || user.auth_version !== claims.ver) {
-    return response.status(403).json({ error: "Administrator access required" });
+  if (!user || !allowedRoles.includes(user.role) || user.role !== claims.role || user.auth_version !== claims.ver) {
+    return response.status(403).json({ error: "This account does not have access to this area" });
   }
 
   request.user = { email: claims.sub, role: user.role };
   next();
+  };
 }
+
+const requireAuth = requireRole("admin", "doctor");
+const requireAdmin = requireRole("admin");
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -156,14 +161,15 @@ app.post("/api/auth/signup", async (request, response) => {
     }
     const credentials = hashPassword(password);
     upsertLocalUser({
+      id: crypto.randomUUID(),
       name: name.trim(),
       email: normalizedEmail,
       password_hash: credentials.hash,
       password_salt: credentials.salt,
-      role: "admin",
-      auth_version: crypto.randomBytes(16).toString("hex"),
+      role: "pending",
+      auth_version: "",
     });
-    return response.status(201).json({ ok: true, pendingApproval: false });
+    return response.status(201).json({ ok: true, pendingApproval: true });
   }
 
   try {
@@ -196,14 +202,15 @@ app.post("/api/auth/signup", async (request, response) => {
       }
       const credentials = hashPassword(password);
       upsertLocalUser({
+        id: crypto.randomUUID(),
         name: name.trim(),
         email: normalizedEmail,
         password_hash: credentials.hash,
         password_salt: credentials.salt,
-        role: "admin",
-        auth_version: crypto.randomBytes(16).toString("hex"),
+        role: "pending",
+        auth_version: "",
       });
-      return response.status(201).json({ ok: true, pendingApproval: false });
+      return response.status(201).json({ ok: true, pendingApproval: true });
     }
     response.status(500).json({ error: error.message || "Unable to create account" });
   }
@@ -211,6 +218,7 @@ app.post("/api/auth/signup", async (request, response) => {
 
 app.post("/api/auth/login", async (request, response) => {
   const { email, password } = request.body;
+  const requestedRole = request.body.role === "admin" ? "admin" : "doctor";
   const normalizedEmail = normalizeEmail(email);
 
   if (useLocalFallback) {
@@ -218,11 +226,12 @@ app.post("/api/auth/login", async (request, response) => {
     if (!user || !passwordsMatch(password || "", { hash: user.password_hash, salt: user.password_salt })) {
       return response.status(401).json({ error: "Invalid email or password" });
     }
-    if (user.role !== "admin") return response.status(403).json({ error: "Your account is awaiting administrator approval" });
+    if (user.role === "pending") return response.status(403).json({ error: "Your doctor account is awaiting administrator approval" });
+    if (user.role !== requestedRole) return response.status(403).json({ error: `This account is registered for ${user.role} sign-in` });
     const authVersion = crypto.randomBytes(16).toString("hex");
     user.auth_version = authVersion;
     const token = createAuthToken({ ...user, auth_version: authVersion });
-    return response.json({ token, user: { email: user.email, name: user.name } });
+    return response.json({ token, user: { email: user.email, name: user.name, role: user.role } });
   }
 
   try {
@@ -235,7 +244,8 @@ app.post("/api/auth/login", async (request, response) => {
     if (!user || !passwordsMatch(password || "", { hash: user.password_hash, salt: user.password_salt })) {
       return response.status(401).json({ error: "Invalid email or password" });
     }
-    if (user.role !== "admin") return response.status(403).json({ error: "Your account is awaiting administrator approval" });
+    if (user.role === "pending") return response.status(403).json({ error: "Your doctor account is awaiting administrator approval" });
+    if (user.role !== requestedRole) return response.status(403).json({ error: `This account is registered for ${user.role} sign-in` });
     const authVersion = crypto.randomBytes(16).toString("hex");
     const { error: updateError } = await getSupabase()
       .from("clinic_users")
@@ -243,7 +253,7 @@ app.post("/api/auth/login", async (request, response) => {
       .eq("email", user.email);
     if (updateError) return response.status(500).json({ error: updateError.message });
     const token = createAuthToken({ ...user, auth_version: authVersion });
-    response.json({ token, user: { email: user.email, name: user.name } });
+    response.json({ token, user: { email: user.email, name: user.name, role: user.role } });
   } catch (error) {
     if (isNetworkFailure(error)) {
       if (!canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
@@ -252,17 +262,18 @@ app.post("/api/auth/login", async (request, response) => {
       if (!user || !passwordsMatch(password || "", { hash: user.password_hash, salt: user.password_salt })) {
         return response.status(401).json({ error: "Invalid email or password" });
       }
-      if (user.role !== "admin") return response.status(403).json({ error: "Your account is awaiting administrator approval" });
+      if (user.role === "pending") return response.status(403).json({ error: "Your doctor account is awaiting administrator approval" });
+      if (user.role !== requestedRole) return response.status(403).json({ error: `This account is registered for ${user.role} sign-in` });
       const authVersion = crypto.randomBytes(16).toString("hex");
       user.auth_version = authVersion;
       const token = createAuthToken({ ...user, auth_version: authVersion });
-      return response.json({ token, user: { email: user.email, name: user.name } });
+      return response.json({ token, user: { email: user.email, name: user.name, role: user.role } });
     }
     response.status(500).json({ error: error.message || "Unable to sign in" });
   }
 });
 
-app.post("/api/auth/logout", requireAdmin, async (request, response) => {
+app.post("/api/auth/logout", requireAuth, async (request, response) => {
   if (useLocalFallback) {
     const user = getLocalUser(request.user.email);
     if (user) {
@@ -290,6 +301,58 @@ app.post("/api/auth/logout", requireAdmin, async (request, response) => {
   }
 });
 
+app.get("/api/admin/pending-users", requireAdmin, async (_request, response) => {
+  if (useLocalFallback) {
+    return response.json([...localUsers.values()]
+      .filter(user => user.role === "pending")
+      .map(({ id, name, email }) => ({ id, name, email })));
+  }
+
+  try {
+    const { data, error } = await getSupabase()
+      .from("clinic_users")
+      .select("id, name, email, created_at")
+      .eq("role", "pending")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    response.json(data || []);
+  } catch (error) {
+    if (isNetworkFailure(error) && canUseLocalFallback()) {
+      useLocalFallback = true;
+      return response.json([...localUsers.values()]
+        .filter(user => user.role === "pending")
+        .map(({ id, name, email }) => ({ id, name, email })));
+    }
+    response.status(error.status || 500).json({ error: error.message || "Unable to load pending accounts" });
+  }
+});
+
+app.post("/api/admin/users/:id/approve", requireAdmin, async (request, response) => {
+  if (useLocalFallback) {
+    const user = [...localUsers.values()].find(candidate => candidate.id === request.params.id && candidate.role === "pending");
+    if (!user) return response.status(404).json({ error: "Pending account not found" });
+    user.role = "doctor";
+    user.auth_version = "";
+    return response.json({ ok: true });
+  }
+
+  try {
+    const { data, error } = await getSupabase()
+      .from("clinic_users")
+      .update({ role: "doctor", auth_version: "" })
+      .eq("id", request.params.id)
+      .eq("role", "pending")
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return response.status(404).json({ error: "Pending account not found" });
+    response.json({ ok: true });
+  } catch (error) {
+    if (isNetworkFailure(error) && !canUseLocalFallback()) return response.status(503).json({ error: "Database unavailable" });
+    response.status(error.status || 500).json({ error: error.message || "Unable to approve account" });
+  }
+});
+
 app.get("/api/health", async (_request, response) => {
   if (useLocalFallback) {
     return response.json({ ok: true, database: "local-memory" });
@@ -309,7 +372,7 @@ app.get("/api/health", async (_request, response) => {
   }
 });
 
-app.get("/api/clinic-state", requireAdmin, async (_request, response) => {
+app.get("/api/clinic-state", requireAuth, async (_request, response) => {
   if (useLocalFallback) return response.json(localState);
 
   try {
@@ -331,7 +394,7 @@ app.get("/api/clinic-state", requireAdmin, async (_request, response) => {
   }
 });
 
-app.put("/api/clinic-state", requireAdmin, async (request, response) => {
+app.put("/api/clinic-state", requireAuth, async (request, response) => {
   if (useLocalFallback) {
     localState = JSON.parse(JSON.stringify(request.body));
     return response.json({ ok: true });
